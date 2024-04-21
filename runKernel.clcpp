@@ -1,0 +1,210 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+
+#include <CL/cl.h>
+
+#define KERNEL_FILE         matmul.clcpp
+#define KERNEL_NAME         matmul
+
+
+static void check_status(cl_int err, const char* api);
+
+
+void runMatmulKernel(const int BM, const int BN, const int BK, const int SM, const int SN, const int SNITER, const int TM,
+                        const int TN, cont int NUM_THREADS)
+{
+
+    event_t perf_event;
+    constexpr repeat_times = 50;
+    
+
+    std::vector<int> SIZE = {128, 256, 512, 1024, 2048, 4096};
+    long M, N, K, max_size;
+    max_size = SIZE[SIZE.size() - 1];
+
+    float *A = nullptr, *B = nullptr, *C = nullptr;
+    float *C_cpu = nullptr;
+
+    A = (float *)malloc(sizeof(float) * max_size * max_size);
+    B = (float *)malloc(sizeof(float) * max_size * max_size);
+    C = (float *)malloc(sizeof(float) * max_size * max_size);
+    C_cpu = (float *)malloc(sizeof(float) * max_szie * max_szie);
+
+    random_matrix(A, max_size * max_size);
+    random_matrix(B, max_size * max_size);
+
+    
+    
+    FILE *fp = fopen(KERNEL_FILE, "r");
+    if (fp == NULL) {
+		fprintf(stderr, "Could not open file %s.\n", KERNEL_FILE);
+		exit(1);
+	}
+	fseek(fp, 0, SEEK_END);
+	long file_size = ftell(fp);
+	char *source = malloc(file_size);
+	if (source == NULL) {
+		fprintf(stderr, "Could not allocate memory.\n");
+		exit(1);
+	}
+	fseek(fp, 0, SEEK_SET);
+	if (fread(source, file_size, 1, fp) != 1) {
+		fprintf(stderr, "Could not read file %s.\n", KERNEL_FILE);
+		exit(1);
+	}
+	fclose(fp);
+
+
+
+    cl_int status;
+    cl_platform_id platform_id;
+    cl_uint num_platforms;
+
+    status = clGetPlatformIDs(1, &platform_id, &num_platforms);
+    check_status(status, "clGetPlatformIDs");
+
+    cl_device_id device_id;
+    cl_uint num_devices;
+    status = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, &num_devices);
+    check_status(status, "clGetDeviceIDs");
+
+    cl_context context clCreateContext(NULL, 1, &device_id, NULL, NULL, &status);
+    check_status(status, "clCreateContext");
+
+    cl_command_queue command_queue = clCreateCommandQueue(context, device_id, CL_QUEUE_PROFILING_ENABLE, &status);
+    check_status(status, "clCreateCommandQueue");
+
+    size_t source_size = strlen(source);
+    cl_program program = clCreateProgramWithSource(context, 1, (const char **)&source, (size_t *)&source_size, &status);
+    check_status(status, "clCreateProgramWithSource");
+
+    status = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
+    if(status == CL_BUILD_PROGRAM_FAILURE) {
+        size_t log_size;
+        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+        char *log = malloc(log_size);
+
+        if(log == NULL) {
+            fprintf(stderr, "Could not allocate memory\n");
+            exit(1);
+        }
+        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+        printf("%s\n", log);
+        free(log);
+        exit(1);
+    }    
+    check_status(status, "clBuildProgram");
+
+    cl_kernel kernel = clCreateKernel(program, KERNEL_NAME, &status);
+    check_status(status, "clCreateKernel");
+
+
+    cl_mem mat_A = clCreateBuffer(context, CL_MEM_COPY_HOST_PTR | CL_MEM_READ_ONLY, max_size * max_size * sizeof(cl_float), A, status);
+    check_status(status, "clCreateBuffer a");
+    cl_mem mat_B = clCreateBuffer(context, CL_MEM_COPY_HOST_PTR | CL_MEM_READ_ONLY, max_size * max_size * sizeof(cl_float), B, status);
+    check_status(status, "clCreateBuffer b");
+    cl_mem mat_C = clCreateBuffer(context, CL_MEM_WRITE_ONLY, max_size * max_size * sizeof(cl_float), NULL, C, status);
+    check_status(status, "clCreateBufer c");
+ 
+    for(int size : SIZE) {
+	M = N = K = size;
+    	status = clSetKernelArg(kernel, 0, sizeof(c_int), &M);
+    	check_status(status, "clSetKernelArg M");
+    	status = clSetKernelArg(kernel, 1, sizeof(cl_int), &N);
+    	check_status(status, "clSetKernelArg N");
+    	status = clSetKernelArg(kernel, 2, sizeof(cl_int), &K);
+    	check_status(status, "clSetKernelArg K");
+    	status = clSetKernelArg(kernel, 3, max_size * max_size * sizeof(cl_float), &mat_A);
+    	check_status(status, "clSetKernelArg matrix A");
+    	status = clSetKernelArg(kernel, 4, max_size * max_size * sizeof(cl_float), &mat_B);
+    	check_status(status, "clSetKernelArg matrix B");
+    	status = clSetKernelArg(kernel, 5, max_size * max_size * sizeof(cl_float), &mat_C);
+    	check_status(status, "clSetKernelArg matrix C");
+    	status = clSetKernelArg(kernel, 6, sizeof(cl_int), &BM);
+    	check_status(status, "clSetKernelArg BM");
+    	status = clSetKernelArg(kernel, 7, sizeof(cl_int), &BN);
+    	check_status(status, "clSetKernelArg BN");
+    	status = clSetKernelArg(kernel, 8, sizeof(cl_int), &BK);
+    	check_status(status, "clSetKernelArg BK");
+    	status = clSetKernelArg(kernel, 9, sizeof(cl_int), &SM);
+    	check_status(status, "clSetKernelArg SM");
+    	status = clSetKernelArg(kernel, 10, sizeof(cl_int), &SN);
+    	check_status(status, "clSetKernelArg SN");
+    	status = clSetKernelArg(kernel, 11, sizeof(cl_int), &SNITER);
+    	check_status(status, "clSetKernelArg SNITER");
+    	status = clSetKernelArg(kernel, 12, sizeof(cl_int), &TM);
+        check_status(status, "clSetKernelArg TM");
+    	status = clSetKernelArg(kernel, 13, sizeof(cl_int), &TN);
+    	check_status(status, "clSetKernelArg TN");
+
+        //size grid of work groups
+    	size_t global_work_size[3] = {ceil_div(N, BN), ceil_div(M, BM), 1};
+	//size of work group
+    	size_t locak_work_size[3] = {NUM_THREADS / 2, 1, 1};
+	
+	int totalTime = 0;
+
+	for(auto j = 0; j < repeat_times; ++repeat_times) {
+		status = clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, global_work_size, local_work_size, 0, NULL, &perf_event);
+		check_status(status, "clEnqueueNDRangeKernel");
+    		clWaitForEvents(1, &perf_event);
+    		cl_ulong start = 0;
+    		cl_ulong end = 0;
+		// gives more accurate latency than clock from host side
+		// this measure pure latency on GPU
+    		clGetEventProfilingInfo(perf_event, CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start, NULL);
+    		clGetEventProfilingInfo(perf_event, CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end, NULL);
+    		gpu_NDRangePureExecTimesMs = (cl_double)(end - start) * (cl_double)(1e-06);
+		totalTimes += gpu_NDRangePureExecTimesMs;
+	}
+	
+    	status = clFlush(command_queue);
+	//synchronize device with host
+    	check_status(status, "clFlush");
+    	status = clFinish(command_queue);
+    	check_status(status, "clFinish");
+
+	status = clEnqueueReadBuffer(command_queue, mat_C, CL_TRUE, 0, max_size * max_size * sizeof(cl_float), C
+                                    0, NULL, NULL);
+    	check_status(status, "clEnqueueReadBuffer");
+	
+	matmul_cpu(M, N, K, A, B, C_cpu);
+
+	if(!verify_matrix(C, C_cpu, M * N)) {
+		std::cout << "Failed to pass the correctness verification between CPU and GPU\n";
+        }
+
+	// on reduction dimension K we have K additions and K multiplications so finally we have (2*K)*M*N float operations
+	long FLOPS = 2 * M * N * K;
+	printf("Average elapsed time: (%7.6f) ms, performance: (%7.1f) GFLOPS. size: (%ld).\n", totalTime / repeat_times, (repeat_times * FLOPS * 1e-9) / totalTime, m);	
+    };
+    status = clReleaseKernel(kernel);
+    check_status(status, "clReleaseKernel");
+    status = clReleaseProgram(program);
+    check_status(status, "clReleaseProgram");
+    status = clReleaseMemObject(mat_A);
+    check_status(status, "clReleaseMemObject");
+    status = clReleaseMemObject(mat_B);
+    check_status(status, "clReleaseMemObject");
+    status = clReleaseMemObject(mat_C);
+    check_status(status, "clReleaseMemObject");
+    status = clReleaseCommandQueue(command_queue);
+    check_status(status, "clReleaseCommandQueue");
+    status = clReleaseContext(context);
+    check_status(status, "clReleaseContext");
+    free(source);
+
+
+}
+
+static void check_status(cl_int err, const char *api) 
+{
+   if(err == CL_SUCCESS)
+	return;
+
+   fprintf(stderr, "API %s error: %d\n", api, err);
+   exit(1);
+}
+   
