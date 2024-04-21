@@ -14,11 +14,11 @@
 #endif
 
 #if SUBGROUP_32
-    constexpr uint subgroupSize = 32;
+#define SUBGROUP_SIZE 32
 #elif SUBGROUP_16 
-    constexpr uint subgroupSize = 16;
+#define SUBGROUP_SIZE 16
 #elif SUBGROUP_8
-    constexpr int soubgroupSize = 8;
+#define SUBGROUP_SIZE 8	
 #endif
 
 #if SHARED_BANKS_32
@@ -27,18 +27,27 @@
     constexpr int extracCols = 2 * SIMD + 1
 #endif
 
-
-constexpr uint BM = 64;
-constexpr uint BN = 64;
-constexpr uint BK = 8;
-constexpr uint TM = 8;
-constexpr uint TN = 8;
+//NVidia RTX A6000
+//per workgroup
+//constexpr uint NUM_THREADS = 128
+//constexpr uint BM = 128;
+//constexpr uint BN = 128;
+//constexpr uint BK = 16;
+//constexpr uint SN = 64;
+//constexpr uint SM = 64;
+//4 cores for one SM (stream multiprocessor) We assume that each simle core has only one thread.
+//constexpr uint WNITER = 4;
+//constexpr uint TM = 8;
+//constexpr uint TN = 4;
 
 namespace {
     __kernel void LoadFromGlobal(int N, int K, float *A, float *B, float *As, float *Bs, int innerRowA, int innerColA, int innerRowB, 
                                     int innerColB, int rowStrideA, int rowStrideB, event_t& event) {
+
+	__attribute__((opencl_unroll_hint(2)))
         for(uint offset = 0; offset + rowStrideA <= BM; offset += rowStrideA) {
 #if VECT2
+            // copy Block from A to As and transpose it
             async_work_group_copy(&As[(innerColA * SIMD + 0) * BM + innerRowA + offset],
                                     &A[(innerRowA + offset) * K + innerColA * SIMD], sizeof(float), event);
             async_work_group_copy(&As[(innerColA * SIMD + 1) * BM + innerRowA + offset],
@@ -71,7 +80,8 @@ namespace {
                                     &A[(innerRowA + offset) * K + innerColA * SIMD + 7], sizeof(float), event);
 #endif
         }
-
+	
+        __attribute__((opencl_unroll_hint(2)))
         for(uint offset = 0; offset + rowStrideB <= BK; offset += rowStrideB) {
 #if VECT2
             async_work_group_copy(&Bs[(innerRowB + offset) * (BN + extraCols) + innerColB * SIMD],
@@ -79,6 +89,16 @@ namespace {
             async_work_group_copy(&Bs[(innerRowB + offset) * (BN + extraCols) + innerColB * SIMD + 1],
                                         &B[(innerRowB + offset) * N + innerColB * SIMD + 1], sizeof(float), event);
 #elif VECT4
+ 	    
+            /* Bank conflict due the vectorization
+               If shared memory has 32 banks and SIMD = 4 then each thread will be strided by 4, so that if subgroup contains
+		32 threads then in the same subgroup four threads will get access to single bank (i.e thread 0, 7, 15 and 31 to bank 0)
+		To avoid this we add extracolumns to Bs. Due this we have following map:
+		thread 0 	-> 	bank0
+                thread 7 	->	bank1
+ 		thread 15 	-> 	bank2
+ 		thread 31 	-> 	bank3
+ 	    */
             async_work_group_copy(&Bs[(innerRowB + offset) * (BN + extraCols) + innerColB * SIMD],
                                     &B[(innerRowB + offset) * N + innerColB * SIMD], sizeof(float), event);
             async_work_group_copy(&Bs[(innerRowB + offset) * (BN + extraCols) + innerColB * SIMD + 1],
@@ -112,7 +132,24 @@ namespace {
     __kernel void computeFromSmem(const uint SM, const uint SN, const int SMITER, const int SNITER, const int SSUBM, const int SSUBN, float *regM, float *regN, 
                                     float *threadResults, const float *As, const float *Bs, const uint subRowIdx, const uint subColIdx, const uint threadRowInSub, 
                                     const uint threadColInSub) {
-        
+       
+
+	/* Because we assume row major memory order in matrix then to avoid strided access next rows we transpose A matrix.
+		
+		  TM					   TM
+		.........  				.........
+    dotIdx=0	.regM	.				.regN	.dotIdx=0
+		.........	  (dotIdx=0)		.........
+    dotIdx=1	.regM	. BK	X (dotIdx=1)         BK	.regN	.dotIdx=1
+		.........	  (dotIdx=2)		.........
+    dotIdx=2	.regM	.				.regN	.dotIdx=2
+		.........				.........	
+
+         Accumulate this results into threadResults table in register
+	
+	*/
+	
+	__attribute__((opencl_unroll_hint(2))) 
         for(uint dotIdx = 0; dotIdx < BK; ++dotIdx) {
             for(uint sSubRowIdx = 0; sSubRowIdx < SMITER; ++sSubRowIdx) {
                 for(uint i = 0; i < TM; ++i) {
@@ -140,15 +177,155 @@ namespace {
                     
 } //namespace
 
-__kernel __attribute__((reqd_work_group_size(X, Y, Z))) 
-         __attribute__((intel_reqd_sub_group_size(subgroupSize)))
+__kernel  __attribute__((intel_reqd_sub_group_size(SUBGROUP_SIZE)))
 void mat_mul(int M, int N, int K, __global const float *A, __global const float *B, 
-                        __global float *C, __constant float* __restrict__ alpha) 
+                        __global float *C, const int BM, const int SM, const int SM, const int SNITER, const int TM, const int TN) 
 {
-    
+   
+
+	/*			GLOBAL MEMORY
+	A (major row memory)			B (row major memory)
+   cRow	.........................               .........................
+	.			.		.   W	.   W	.  W	.			
+	.      WORK_GROUP I 	.		.   O	.   O	.  O	.
+	.			.		.   R	.   R	.  R	.
+	.........................		.   K	.   K	.  K	.
+	.			.		.	.	.	.
+      M	.	WORK_GROUP II	.      X      K	.   G	.   G	.  G	.
+	.			.		.   R	.   R	.  R	.
+	.........................		.   O	.   O	.  O	.
+	.			.		.   U	.   U	.  U	.
+	.	WORK_GROUP III  .		.   P   .   P	.  P	.
+	.			.		.   I	.   II	. III	.
+	.........................		.........................
+                    K                             cCol      N
+       */
+
+
+
+       /* WORK_GROUP I                              BN
+	  cRow                                  .........
+        					.	. cCol
+           BK      BK      BK		     BK	.  I	.
+	.........................		.	.-------- Load into shared memory (into Bs)	
+	.  	.	.	.		.........		(in the same iteration)
+     BM	.  I  	.  II	.  III	.    X		.	.
+ 	.	.	.	.	     BK	.  II	.
+	.........................		.	.
+            |					.........
+            |					.	.
+        Load into Shared Mem (into As)	     BK	.  III	.
+      (in single iteration)	    		.	.
+						.........
+
+
+       */
+
+
+
+	/* Block tilling
+	   BLOCK I			     BN
+					.............
+            BK				. t . t . t .	
+	...........			. i . i . i .	
+    TM 	. tile 1  .			. l . l . l .
+	...........                     . e . e . e . BK 
+	. tile 2  . BM           X      .   .   .   .
+	...........                     . 1 . 2 . 3 .
+	. tile 3  .                     .   .   .   .
+	...........                     .............
+	    |                            TN 
+            |				|	
+          Load into thread register ____|
+
+	This approach enables accumutate results on registers. Moreover due this we reduce read/load operations per threads.
+	As an example:
+	Let BM = BN = 128, BK = 16, TM = 8, TN = 4
+			
+ 	without block tilling:						with block tiling									
+	16 loads from BM x BK						8*16 loads from BM x BK
+	16 loads from BK x BN						4*16 loads from BK x BN
+	1 load and 1 store on BM x BN					8*4 loads and 8*4 store on BM X BN
+	-----------------------------					----------------------------------
+	33 loads/1 store per result					7 loads/1 store per result 
+	
+    */
+
+
+    /* subgroup tilling
+       Threads granulity in workroup is subgroup (1D set of threads run simultations executions and access to shared memory)
+       To get maximum perf size of subgroup should be the same as number of banks in shared memory (one executions per one cache line transaction), moreover we 
+       should avoid banks conflicts and obtain coalesced access (in this case for one row in A read nth elements from consectutuve columns in B)
+       Due number of subgroups in one work groups we can hide latency because subgroups runs concruency.
+
+	After transposing A into As and having regard to each thread accumutale tiles TM and TN we have the following partition of blocks in As and Bs.
+
+	BLOCK I
+
+ 	      BM				BN
+	................		................
+	.    .    .    .	      1 ......    .    .
+    	.    .    .    .               /.    .    .    .
+    BK 	.    ......    .              / .    .    .    . BK
+        .   1......\   .      X      /  .    .    .    .
+        .    .    . \  .            /   .    .    .    .
+        .    .    .  \ .           /    .    .    .    .
+        ..............\.          /     ................
+         SM    SM   SM \         /         SN    SN   SN
+			\	/
+              subgroup in C at coordinate (subRow, subCol)
+
+	*/
+
+
+	/*
+	Stream Multiprocessor contains several cores (ALU/FPU) We assume that we have 4 cores per SM
+	
+	Subgroup with cooridnate (subRow, subCol)
+	SNITER = 2
+		   ===> number cores = SNITER * SMITER = 4
+	SMITER = 2 
+
+	SSUBN SSUBN
+	...........			Cores (C1, C2, C3, C4)
+ SSUBM	.    .    .
+	. C1 . C2 . S
+	.    .    . M
+	........... I
+	.    .    . T
+ SSUBM	. C3 . C4 . E
+    	.    .    . R
+        ...........
+          SNITER
+
+
+	Core C1
+          
+        regM (TM)       regN (TN)
+      	.......        ........
+   K=1	.     .	   x   .      . K=1	
+	.......        ........
+           |              | 
+           \              /
+            \            /
+                Core C1
+
+
+     */
+
+
+     /*
+      Next step?
+      Intel core contains 8 threads. TODO last level divide work item task into one thread on given core
+      Full compute utilization:
+      
+      Device (grid) -> Stream Multiprocessor (Work group, subgroup) - > core on SM -> thread per core on SM
+     */
+
+
     const uint cRow = get_group_id(1);
     const uint cCol = get_group_id(0);
-    const uint numThreads = get_global_size(0) * get_global_size(1) * get_global_size(2);
+    const uint numThreads = get_local_size(0) * get_local_size(1) * get_local_size(2);
     const uint subgroupSize = get_sub_group_size();
     
 
@@ -178,31 +355,54 @@ void mat_mul(int M, int N, int K, __global const float *A, __global const float 
 
     __local event_t frontEvent;
     __local event_t backEvent;
+ 
+    if(get_local_id(0)) {
+ 	frontEvent = (event_t)0;
+	backEvent = (event_t)0;
+    } 
+    barrier(CLK_MEM_LOCAL_FENCE);
 
     auto frontEventPtr = &frontEvent;
     auto beckEventPtr = &backEvent; 
 
+    //double buffering
     __local float As[2 * BM * BK];
     __local float Bs[2 * BK * (BN + extraCols)];
     
     __private float threadResults[SMITER * SNITER *TM * TN] = {0.0f};
-    __private float regM[TM] = {0.0f};
-    __private float regN[TN] = {0.0f};
+    __private float regM[SMITER * TM] = {0.0f};
+    __private float regN[SNTITER * TN] = {0.0f};
 
 
-    A += cRow * BM * K;                          //row=cRow, col=0
-    B += cCol * BN;                              //row=0, col=cCol
+    A += cRow * BM * K;                          				//row=cRow, col=0
+    B += cCol * BN;                              				//row=0, col=cCol
     C += (cRow * BM + subRow * SM) * N + cCol * BN + subcCol * SN;
 
     //switch between double buffer chunks
     int As_offset = 0;
     int Bs_offset = 0;
 
+    // Async load first block into SMEM
     *frontEventPtr = LoadFromGmem(N, K, A, B, As + As_offset * BM * BK, Bs + Bs_offset * BK * BN, innerRowA, innerColA, innerRowB, innerColB, rowStrideA, rowStrideB, (event_t)0);    
 
+
+    /* Async double buffering
+	
+	As .............                       frontBarrierEvent   As.............                        backBarrierEvent  As .............
+	   .	 .     .                                             .	   .	 .                              |              .     .     .
+	   .     .     .<--- Load 2th Block          |               .     .     .<----Load 2th Block           |              .     .     .<--- Load into register .....
+	   .............     from GMEM		     |	             .............	from GMEM               |              .............   
+              ^		                             |                  |                                       |                |
+	      |                                      |                  |                                       |                |
+         Load 1th Block  					   Load into	                                              Load 3th Block
+	from GMEM             					    register							from GEMM	
+
+    */
+    __attribute__((opencl_unroll_hint(2)))	
     for(uint bkIdx = 0; bkIdx < K - BK; bkIdx += BK) {
+	//LoadFromGmem and computerFromSmem are child kernel (dynamic parallelism) which are run asynchronic so we need synchronization by wait_group_event 
         *backEventPtr = LoadFromGmem(N, K, A + BK, B + BK * N, As + (1 - As_offset) * BM * BK, Bs + (1 - Bs_offset) * BK * BN, innerRowA, innerColA, innerRowB, innerColB, 
-                                    rowStrideA, rowStrideB, (event_t)0);
+                                    rowStrideA, rowStrideB, *frontEventPtr);
         wait_group_events(1, frontEventPtr);
         computeFromSmem(SM, SN, SMITER, SNITER, SSUBM, SSUBM, regM, regN, threadResults, As + As_offset * BM * BK, Bs + Bs_offset * BK * BN, subRow, subCol, 
                         threadRowInSubgroup, threadColInSubgroup);
@@ -217,57 +417,59 @@ void mat_mul(int M, int N, int K, __global const float *A, __global const float 
         auto tmpEvent = frontEventPtr;
         frontEventPtr = backEventPtr;
         backEventPtr = tmpEvent;
-
+ 
+	//to avoid situation when thread can start next instruction before loop is ended
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-
+    
+    //Async load last block into SMEM
     wait_group_events(1, frontEventPtr);
     computeFromSmem(SM, SN, SMITER, SNITER, SSUBM, SSUBM, regM, regN, threadResults, As + As_offset * BM * BK, Bs + Bs_offset * BK * BN, subRow, subCol, 
                     threadRowInSubgroup, threadColInSubgroup);
 
-
+    __attribute__((opencl_unroll_hint(2)))
     for(uint sSubRowIdx = 0; sSubRowIdx < SMITER; ++sSubRowIdx) {
         for(uint sSubColIdx = 0; sSubColIdx < SNITER; ++sSubColIdx) {
             float *C_simd = C + (sSubRowIdx * SSUBM * N) + (sSubColIdx * SSUBN);
             for(uint resIdxM = 0; resIdxM < TM; ++resIdxM) {
                 for(auto resIdxN = 0; resIdxN < TN; resIdxN += 4) {
 #if VECT2
-                    float2 tmp = (float2)(C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 0], 
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 1]);
+                    float2 tmp = (float2)(C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 0], 
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 1]);
 #elif VECT4
-                    float4 tmp = (float4)(C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 0], 
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 1],
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 2], 
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 3]);
+                    float4 tmp = (float4)(C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 0], 
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 1],
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 2], 
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 3]);
 #elif VECT8
 
-                    float8 tmp = (float8)(C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColSubgroup * TN + resIdxN + 0], 
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 1],
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 2], 
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 3],
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 4], 
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 5],
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 6], 
-                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N +threadColInSubgroup * TN + resIdxN + 7]);
+                    float8 tmp = (float8)(C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColSubgroup * TN + resIdxN + 0], 
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 1],
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 2], 
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 3],
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 4], 
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 5],
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 6], 
+                                        C_simd[(threadRowInSubgroup * TM + resIdxM) * N + threadColInSubgroup * TN + resIdxN + 7]);
 #endif
                     const int i = (sSubRowIdx * TM + resIdxM) * (SNITER * TN) + sSubColIdx * TN + resIdxN;
 #if VECT2
-                    tmp.s0 = *alpha * threadResults[i + 0];
-                    tmp.s1 = *alpha * threadResults[i + 1];
+                    tmp.s0 = threadResults[i + 0];
+                    tmp.s1 = threadResults[i + 1];
 #elif VECT4
-                    tmp.s0 = *alpha * threadResults[i + 0];
-                    tmp.s1 = *alpha * threadResults[i + 1];
-                    tmp.s2 = *alpha * threadResults[i + 2];
-                    tmp.s3 = *alpha * threadResults[i + 3];
+                    tmp.s0 = threadResults[i + 0];
+                    tmp.s1 = threadResults[i + 1];
+                    tmp.s2 = threadResults[i + 2];
+                    tmp.s3 = threadResults[i + 3];
 #elif VECT8
-                    tmp.s0 = *alpha * threadResults[i + 0];
-                    tmp.s1 = *alpha * threadResults[i + 1];
-                    tmp.s2 = *alpha * threadResults[i + 2];
-                    tmp.s3 = *alpha * threadResults[i + 3];
-                    tmp.s4 = *alpha * threadResults[i + 4];
-                    tmp.s5 = *alpha * threadResults[i + 5];
-                    tmp.s6 = *alpha * threadResults[i + 6];
-                    tmp.s7 = *alpha * threadResults[i + 7];
+                    tmp.s0 = threadResults[i + 0];
+                    tmp.s1 = threadResults[i + 1];
+                    tmp.s2 = threadResults[i + 2];
+                    tmp.s3 = threadResults[i + 3];
+                    tmp.s4 = threadResults[i + 4];
+                    tmp.s5 = threadResults[i + 5];
+                    tmp.s6 = threadResults[i + 6];
+                    tmp.s7 = threadResults[i + 7];
 #endif
 
 #if VECT2
