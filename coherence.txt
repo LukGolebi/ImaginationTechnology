@@ -1,0 +1,42 @@
+SM - stream multiprocessor
+
+
+
+            SM               SM              SM
+	--------------------------------------------------
+	|		|               |                |
+	|		|	        |                |
+	| |-----------| | |-----------| | |------------| |
+	| |  L1/SMEM  | | | L1/SMEM   |	| | L1/SMEM    | |
+	| |           | | |           | | |            | |
+        | ------------- | ------------- | -------------- |
+	-------------------------------------------------|
+        |  						 |
+        |    L2 cache                                    |
+        |    Atomic operations				 |
+        --------------------------------------------------
+
+
+        L1 are cache without coherence i.e on different SMs L1 cahces can contain old values.
+        To provide coherence with actual value on L2 cache we need coherence protocol.
+
+         We have two big issue:
+	 1. traffic of messages between cahe levels to get coherences
+         2. Storage of state and direction of cahe line, i.e cache line besides of data to transfer should also contains state flag (like valid, invalid, request etc) and adress and id of core
+
+        Popular cache protocol:
+    
+        MSI - 	3 state, all L1 will be updated. This is unoptimized because sometimes not need to copy data from L2 to all L1
+	MESI -  4 state (additional Exclusive state). It will be updated only the L1 cache which send request to new value and no store in main memory value from L1 cache. This reduce memory traffic
+		but message trafic is complicated and time consuming 
+        GPU-VI - optimized version of MESI on GPU. It consist of two states between different cache level (L1, L2) and it implement write-through, write-no allocate L1 (i.e invalidate all L1 copies 
+		after updating L2)
+
+        New approach:
+
+	Tempolar coherence (TC-strong, TC-weak)
+	In this approach we predict time (time epoch) to need load/store data between L1 and L2. After if we out of scope of the time epoch we can assume that L1 is not coherent. This strongly reduces
+        message traffic between caches and improve performance.
+
+
+	 

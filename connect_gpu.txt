@@ -1,0 +1,84 @@
+
+
+
+
+		     GPU	
+   		      /
+		GPU  /
+		 |  / 
+		 | /
+                 |/
+		CPU-----GPU
+		 |
+   		 |	
+		 |
+		GPU
+
+
+	Main dissadvantages
+        - Bootleneck at CPU
+        - Non scalable for big numbers of GPUs
+
+
+	Partially optimization
+
+
+
+
+            
+	   GPU1       GPU2        GPU3                 We can add statistic of times using GPU1, GPU2, GPU3.
+            |          |           |			If using GPU1 is significanty larger than other ones then on GPU1 we allocate buffer and copy portion on data but
+            |	       |           |			on GPU2 and GPU3 we map adress space from host and use zero-copy (buffer map/unmap on OpenCL)
+	------------------------------------ 
+	|				   |
+	|  Virtual Shared Memory	   |		Allocate buffer and copy data from host is time consume but kernel run faster
+	|				   |		Zero-copy is no time consuming but kernel is much slower because every time we have to load data from host 
+	------------------------------------		throught PCI bus
+			|
+			|
+			|
+		      CPU
+
+
+
+
+Another approach
+
+               Compute Unit
+	-------------------------	
+	| G  |	Core1  |  SMEM	|      GRF - general register file for all threads
+	| R  | 	Core2  |	|      Each core is dedicated to different task like matrix mult or float comp, video decoder, dsp etc..
+	| F  | 	Core3  |	|      SEM - shared memory
+	|    | 	.....  |	|
+	|    |	       |	|
+        -------------------------	
+
+
+	-----------------                  ------------------
+	|compute 	|partialy results  | compute 	    | partialy result
+	| unit I	|----------------->|  unit II	    |---------------->  ........
+	|		|		   |                |	
+	----------------	           ------------------
+
+
+
+       In this approach we ommit CPU central scheduling, moreover we ommit load/store partial results into/from global memory.
+       Because in each compute unit we write results into SEM so we need synchronization barrier on whole SMEM before send output to the next compute unit, hence we cannot hide latency
+       beetwen compute units.
+
+       Idea to solve it
+
+	SMEM
+       ---------- stream 1         
+       | bank1	|------------>
+       ---------- stream 2
+       | bank 2 |------------>  SMEM in compute unit 2
+       ---------- stream 3
+       | bank 3 |------------>
+       ----------	
+        Comp.
+        unit 1
+
+
+We can divide task into several cores. Each core have acess to one bank. Because we use independent streams which asynch copy banks so we no need to wait until all comp unit finish his work
+before send partial result to next compute unit
