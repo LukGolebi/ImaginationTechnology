@@ -96,3 +96,15 @@ Alu ----> thread1 register
 Alu ----> thread2 register
 Alu ----> thread3 register
 ........................
+
+Ideally situation is where we have fully coalescing access to warp
+  
+                                           reg1    reg2   reg3  ....  reg 32       
+cahe line segment from L2 (128 kb) --->    ---     ---    ---          ---     id reg segment
+
+Because we merge two or more warps into one then we have rather the following situation
+
+reg1    reg2    reg3    ...    reg32
+---                             ----
+                ----
+        ----                
