@@ -1,0 +1,110 @@
+==========================================================================================================================================================================
+                                                                            WARP DIVERGENCE
+==========================================================================================================================================================================
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                              The Problem
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+PC - Program countner (id of instruction)
+Warp - fixed by hardware set of 32 consectuive threads. Each thread has the same PC in warp in given cycle.
+Mask - 32 length bit number, set bit on n-th position indicates that n-th thread is active. Unset bit indicates that the given thread is idle
+
+Let us consider the following example:
+
+                  PC: A
+                  if(cond) {
+                    PC: B
+                  } else {
+                    PC: C
+                  }
+                  PC: D
+
+On the warp level it looks as follows:
+
+PC: A            PC: B                 PC: C                PC: D
+Cycle X          Cycle X+1             Cycle X+2            Cycle X+3
+------->         --------->            IDLE                 ---------->
+------->         --------->            IDLE                 ---------->
+........         ..........            .........            ...........
+------->          IDLE                 --------->           ---------->
+------->          IDLE                 --------->           ---------->
+                                                            Re-divergence
+
+
+Divergence lead to loss performance. Actual GPU hardware cannot ommit divergence (if condition is evaluated in runtime, so it is hard to predict how many threads
+will run one branch and how many second branch). Desplite of this we can optimizing branch divergence by grouping maximum threads from one branch into one SIMD and from 
+second branch into other SIMD. This gives us great achivement in particular in the case where we have multiple divergence with branches contains several instructions.
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                      Optimizing divergence
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                     Dynamic Warp Formation
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Let us consider the following example
+(assume that warp is 4 threads, each PC instruction is executed by two warps, i.e x and y)
+
+      PC: A                            PC: A      PC: A     PC: B     PC: B     PC: C     PC: C      PC: D     PC: D    PC: E     PC: E     PC: F      PC: F
+        x/1111                         warp x     warp y    warp x    warp y    warp x    warp y     warp x    warp y   warp x    warp y    warp x     warp y
+        y/1111                         ----->     ----->    ----->    idle      ------>   idle       idle      idle     ----->    idle      idle       ----->
+      if(cond1) {                      ----->     ----->    ----->    idle      idle      idle       ------>   idle     ----->    idle      idle       ----->
+        PC: B                          ----->     ----->    ----->    ----->    idle      ------>    ------>   idle     ----->    ----->    idle       idle
+          x/1110                       ----->     ----->    idle      ----->    idle      idle       idle      ----->   idle      ----->    ----->     idle
+          y/0011
+        if(cond2) {
+          PC: C                        PC: G       PC: G     PC: A
+            x/1000                     warp x      warp y
+            y/0010                     ----->      ----->
+        } else {                       ----->      ----->
+          PC: D                        ----->      ----->
+            x/0110                     ----->      ----->
+            y/0001
+        }                              We can seen much divergence and highly underutilzed warps. We can improve this. Let us focus on PC: D
+        PC: E                          
+          x/1110                      Baseline:                                     Dynamic Warp Formation
+          y/0011                                                                      
+      } else {                        PC: D       PC: D                              PC: D
+        PC: F                         warp x      warp y                             warp x && warp y
+          x/0001                      idle        idle                               idle
+          y/1100                      ----->      idle            ======>            ------->
+      PC: G                           ----->      idle                               ------->
+        x/1111                        idle        ----->                             ------->
+        y/1111
+        goto A
+
+We can se that in Dynamic Warp Formation (DWF) we merged two warps into one. This is great perf improving but also arise a problem.
+Let us consider anonter PC block, namely PC: B
+
+                                                            DWF
+PC: B        PC: B                            PC: B                    PC: B
+warp x       warp y                           warp x && warp y        warp y
+------>      idle                             ------->                idle
+------>      idle         ==========>         ------->                idle
+------>      ----->                           ------->                ------->
+idle         ----->                           ------->                idle
+
+Note that warp x and warp y contain 3rd acrive thread, so if we wont to merge this two warps then it will occures 2 bank conflict on register file. Therefore
+in DWF we also obtain two PC: B blocks in which second one is strongly unutilized!
+
+How to solve it from the hardware perspective?
+The first problem is regular optimal access to register files after merging warps
+
+Eeach thread has own space in register file, like this
+Alu ----> thread1 register
+Alu ----> thread2 register
+Alu ----> thread3 register
+........................
+
+Ideally situation is where we have fully coalescing access to warp
+  
+                                           reg1    reg2   reg3  ....  reg 32       
+cahe line segment from L2 (128 kb) --->    ---     ---    ---          ---     id reg segment
+
+Because we merge two or more warps into one then we have rather the following situation
+
+reg1    reg2    reg3    ...    reg32
+---                             ----
+                ----
+        ----                
