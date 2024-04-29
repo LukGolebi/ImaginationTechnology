@@ -87,3 +87,12 @@ idle         ----->                           ------->                idle
 
 Note that warp x and warp y contain 3rd acrive thread, so if we wont to merge this two warps then it will occures 2 bank conflict on register file. Therefore
 in DWF we also obtain two PC: B blocks in which second one is strongly unutilized!
+
+How to solve it from the hardware perspective?
+The first problem is regular optimal access to register files after merging warps
+
+Eeach thread has own space in register file, like this
+Alu ----> thread1 register
+Alu ----> thread2 register
+Alu ----> thread3 register
+........................
