@@ -40,5 +40,36 @@ second branch into other SIMD. This gives us great achivement in particular in t
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
                                                                       Optimizing divergence
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-I                                                                    Dynamic Warp Formation
+                                                                     Dynamic Warp Formation
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Let us consider the following example
+(assume that warp is 4 threads, each PC instruction is executed by two warps, i.e x and y)
+
+      PC: A                            PC: A      PC: A     PC: B     PC: B     PC: C     PC: C      PC: D     PC: D    PC: E     PC: E     PC: F      PC: F
+        x/1111                         warp x     warp y    warp x    warp y    warp x    warp y     warp x    warp y   warp x    warp y    warp x     warp y
+        y/1111                         ----->     ----->    ----->    idle      ------>   idle       idle      idle     ----->    idle      idle       ----->
+      if(cond1) {                      ----->     ----->    ----->    idle      idle      idle       ------>   idle     ----->    idle      idle       ----->
+        PC: B                          ----->     ----->    ----->    ----->    idle      ------>    ------>   idle     ----->    ----->    idle       idle
+          x/1110                       ----->     ----->    idle      ----->    idle      idle       idle      ----->   idle      ----->    ----->     idle
+          y/0011
+        if(cond2) {
+          PC: C                        PC: G       PC: G     PC: A
+            x/1000                     warp x      warp y
+            y/0010                     ----->      ----->
+        } else {                       ----->      ----->
+          PC: D                        ----->      ----->
+            x/0110                     ----->      ----->
+            y/0001
+        }                              We can seen much divergence and highly underutilzed warps. We can improve this. Let us focus on PC: D
+        PC: E                          
+          x/1110                      Baseline:                                     Dynamic Warp Formation
+          y/0011                                                                      
+      } else {                        PC: D       PC: D                              PC: D
+        PC: F                         warp x      warp y                             warp x && warp y
+          x/0001                      idle        idle                               idle
+          y/1100                      ----->      idle            ======>            ------->
+      PC: G                           ----->      idle                               ------->
+        x/1111                        idle        ----->                             ------->
+        y/1111
+        goto A
