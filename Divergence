@@ -73,3 +73,17 @@ Let us consider the following example
         x/1111                        idle        ----->                             ------->
         y/1111
         goto A
+
+We can se that in Dynamic Warp Formation (DWF) we merged two warps into one. This is great perf improving but also arise a problem.
+Let us consider anonter PC block, namely PC: B
+
+                                                            DWF
+PC: B        PC: B                            PC: B                    PC: B
+warp x       warp y                           warp x && warp y        warp y
+------>      idle                             ------->                idle
+------>      idle         ==========>         ------->                idle
+------>      ----->                           ------->                ------->
+idle         ----->                           ------->                idle
+
+Note that warp x and warp y contain 3rd acrive thread, so if we wont to merge this two warps then it will occures 2 bank conflict on register file. Therefore
+in DWF we also obtain two PC: B blocks in which second one is strongly unutilized!
