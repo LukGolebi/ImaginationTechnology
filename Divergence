@@ -108,3 +108,22 @@ reg1    reg2    reg3    ...    reg32
 ---                             ----
                 ----
         ----                
+So that if we merge two warps then the most optimal case is when we preserve order of threads in this two warps. Otherwise we have to use crossbar in registers.
+Let us show hardware implementtion of warp scheduler.
+
+
+|------------------|      |-------------|      |------------|   |----|
+|warp update reg A |----->|             |----->|            |-->|    |  
+|------------------|      | PC warp LUT |      | warp pool  |-->|    |
+                          |             |      |            |-->|    | issue logic
+|------------------|      |             |      |            |-->|    |
+|warp update reg B |----->|             |----->|            |-->|    |
+|------------------|      |-------------|      |------------|   |----|
+                                   |                 |               |
+                                   |               warp              |   
+                                   |------------- allocator----------|
+                                                                     |
+                                                                   |---|  
+                                                                   |   |
+                                            ALU's<----registers  <-|   | I-Cache
+                                                                   |---|
