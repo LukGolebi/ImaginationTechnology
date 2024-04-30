@@ -198,4 +198,5 @@ virt warp  virt warp
 
 Note that we still have divergence on SISD nodes. Each virtual warp will be serialized but due this the divergence will be reduce and coalesced memory access will be improve.
 
-On of the best example to demonstrate how this conception works is BFS (Breath first search) algorithm.
+On of the best example to demonstrate how this conception works is BFS (Breath first search) algorithm. As the name suggested us, BFS in each iteration goes throught all horizontal nodes
+Each of this horizont is called level. We start from the head which is on 0-th level. 
