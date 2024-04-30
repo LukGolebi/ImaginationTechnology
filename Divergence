@@ -135,9 +135,23 @@ reused threads from y are divided into two groups - mask 1011 for PC B and mask 
 from warp x hence we divide group 1011 into 1001 and 0010. The firs one is merged with 0110 from warp x in warp loop and the second one is considered as next warp with index 3.
 Finally in warp pool we have three rady warps - merged 1111 with PC B, mreged 111 with PC C and 0010 with PC B.
 
+The key benefits of this approach is that we have much better SIMD-warp utilization. Moreover there is no register bank conflict and we need no crossbar on registers.
+Main dissadvantage is that there is possibility occurs strongy unutilized SIMD-warp. Moreover, one warp need to wait several cycles to merged with other one.
+
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
                                                             L                 Large Warp
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 In this approach we join several warps into big one. As we noticed each warp has own mask of active threads. Because we want to join several warps into one so our mask of this big warp
 will be 2D table.
+
+Let be given N several warps (w_1, ..., w_N). Each of them has a mask (T_0, ...., T_31). Then large warp mask will be of the form
+
+|----------------------------|
+|T_0|...................|T_31|  w_1
+|T_32|..................|T_63|  w_2
+|............................|
+|T_((N-1)*32|...|T_((N*32)-1)|  w_N
+|----------------------------|
+
+Each cell indicates acvive or ile thread (1 or 0)
