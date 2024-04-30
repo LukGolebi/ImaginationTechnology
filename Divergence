@@ -196,5 +196,6 @@ virt warp  virt warp
 |  |  |  | SIMD
 |--|--|--|
 
+Note that we still have divergence on SISD nodes. Each virtual warp will be serialized but due this the divergence will be reduce and coalesced memory access will be improve.
 
 On of the best example to demonstrate how this conception works is BFS (Breath first search) algorithm.
