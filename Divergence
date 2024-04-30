@@ -171,3 +171,30 @@ Actual GPU hardware
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
                                                                             Virtual Warp
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Virtual warping is pure logic/software technique. It is wery usefull when we have a long nested sequence if-else-if flows, for example in irregular structure like trees or graphs.
+Regular structure like matrix or memory layout format have regular access to single element. Alhrought, we cannot know size of matrix on compiler time but we design pattern of strides to access 
+single element. Hence we can designt code with avoiding branch divergences and uncoalesced memory access. 
+Irregular structure is absolutely not know at the compiler time. We can add much nodes with different in and out degrees in runtime. To get access to a single node we have to go throught 
+sequence of if-else-if which lead us to large divergence and uncoalesced memory access. 
+One of the most common technique to improve this is virtual warping. In this case we divide our task into two parts:
+- SISD (single instruction single data) In this part we dedicated an unique instruction to an unique element form set of data.
+- SIMD (single instruction multiple data) Here, we propagate the same instruction to set of similar data.
+
+Notice that size of warp is fixed by hardware restriction. In the case of NVidia/Cuda it is 32 threads. So that we virtualy divide the warp into several subwarps. Each subwarps will represent
+a SISD but each lane of this subwarp is putted in SIMD
+
+                          warp
+virt warp  virt warp
+|--------|--------|--------|--------|--------|--------|
+| SSID   | SSID   | SSID   | SSID   | SSID   | SSID   |
+|        |        |        |        |        |        |
+|--------|--------|--------|--------|--------|--------|
+     |
+     |
+|--|--|--|
+|  |  |  | SIMD
+|--|--|--|
+
+
+On of the best example to demonstrate how this conception works is BFS (Breath first search) algorithm.
