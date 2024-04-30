@@ -127,3 +127,16 @@ Let us show hardware implementtion of warp scheduler.
                                                                    |   |
                                             ALU's<----registers  <-|   | I-Cache
                                                                    |---|
+
+Let us consider two warps with mask 1111 running PC A, namely x/1111 and y/1111. Each of them is in warp pool and then executed on ALU's concruently. When warp x finish his work then its
+threads are reused and divided into to groups. The fist one is with the mask 0110 and putted into warp update reg A with PC B, the second one (1001) is putted into warp update reg B with 
+PC C. Next these groups are proceded into PC warp LUT - the fist one with index 0 and te second one with index 1. Finally are putted into warp pool and waiting for warp y. Similary, 
+reused threads from y are divided into two groups - mask 1011 for PC B and mask 0100 for PC C. On PC warp LUT we note that the 3rd thread from warp y has register bank conflict with 3rd thread 
+from warp x hence we divide group 1011 into 1001 and 0010. The firs one is merged with 0110 from warp x in warp loop and the second one is considered as next warp with index 3.
+Finally in warp pool we have three rady warps - merged 1111 with PC B, mreged 111 with PC C and 0010 with PC B.
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                            L                 Large Warp
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+In this approach we join several warps into big one
