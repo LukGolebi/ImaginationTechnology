@@ -148,15 +148,37 @@ will be 2D table.
 Let be given N several warps (w_1, ..., w_N). Each of them has a mask (T_0, ...., T_31). Then large warp mask will be of the form
 
 |----------------------------|
-|T_0|...................|T_31|  w_1
-|T_32|..................|T_63|  w_2
+|T_0|T_1|..........|T_30|T_31|  w_1
+|T_32|.............|T_62|T_63|  w_2
 |............................|
 |T_((N-1)*32|...|T_((N*32)-1)|  w_N
 |----------------------------|
 
 Each cell indicates acvive or ile thread (1 or 0)
 
-Actual GPU hardware take one cache line from L2 (like 128 kb in NVidia) and copy it to register files in the same fashion like this
+Each warp has is own ID register file (i.e each lane in given varp has te same ID in different register bank) like this
+
+           Warp 1's register file
+|-------|-------|-------|--------|-------|       
+| ID    |       |       |        |       |       |-------|
+|-------|-------|-------|--------|-------|       |       |
+|xxxxxxx|xxxxxxx|xxxxxxx|xxxxxxxx|xxxxxxx|<------|       |<------- warp 1's with reg ID A 
+|-------|-------|-------|--------|-------|       |       |
+|  ID   |       |       |        |       |       |       |
+|-------|-------|-------|--------|-------|       | adress|
+lane 0   lane 1   .....  lane N-2 lane N-1       |decoder|
+                                                 |       |
+                                                 |       |
+          Warp 2's register file                 |       |
+|----------------------------------------|       |       |
+|                                        |<----- |       |<------- warp 2's with reg ID B
+|                                        |       |       |
+|                                        |       |       |
+|----------------------------------------|       |       |
+                                                 |       |
+.......................................          |-------|
+
+Because
 
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
