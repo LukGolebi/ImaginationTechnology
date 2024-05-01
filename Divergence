@@ -176,9 +176,32 @@ lane 0   lane 1   .....  lane N-2 lane N-1       |decoder|
 |                                        |       |       |
 |----------------------------------------|       |       |
                                                  |       |
-.......................................          |-------|
+...........    etc    ...................        |-------|
 
-Because
+Because we wanto to join different warps so different warps can take different ID register from its register file. Therefore we need to sevaral adress decoders. Each warp in large warp should
+contains own decoder adress.
+
+Let us show how Large warp works on simple case. Assume that warp is 4 threads. Let us consider the following eight warps in given divergence:
+
+  warp 0     warp 1       warp 2      warp 3      warp 4         warp 5      warp 6         warp 7
+|1|1|0|0|   |1|0|0|1|   |0|1|1|1|    |0|0|1|0|   |0|0|1|1|      |0|1|0|1|   |1|0|0|0|      |1|0|1|0|
+
+As we can see each warp contains ide threads. Now, we join they into single large warp
+
+LW mask                we want to merge warps in LW in such way to avoid bank register conflict. 
+|-|-|-|-|              In cycle X we take two first thread from row 0, last thread from row 1 and 3th thread from row 2
+|1|1|0|0| row 0        In cycle X+1 we take first from row 1, second from row 2, tird from row 3 and last one from the row 2
+|1|0|0|1| row 1        In cycle X+2 we take first from row 6, second from row 5 and third and fourth from row 4
+|0|1|1|1| row 2        In cycle X+3 we take first and third from row 7 and fourth from row 5
+|0|0|1|0| row 3
+|0|0|1|1| row 4
+|0|1|0|1| row 5
+|1|0|0|0| row 6
+|1|0|1|0| row 7
+|-|-|-|-|
+
+So, in every cycle we have no register file conflict. Moreover, in cycle X, X+1 and X+2 we have fully SIMD utilized because active mask is 1111. In cycle X+3 active mask i 1011  
+
 
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
